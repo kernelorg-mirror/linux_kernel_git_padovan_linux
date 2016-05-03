@@ -26,6 +26,8 @@
 #include <linux/sync_file.h>
 #include <uapi/linux/sync_file.h>
 
+#include "sync_debug.h"
+
 static const struct file_operations sync_file_fops;
 
 static struct sync_file *sync_file_alloc(void)
@@ -87,6 +89,7 @@ struct sync_file *sync_file_create(struct dma_fence *fence)
 		 fence->ops->get_timeline_name(fence), fence->context,
 		 fence->seqno);
 
+	sync_file_debug_add(sync_file);
 	return sync_file;
 }
 EXPORT_SYMBOL(sync_file_create);
@@ -269,6 +272,7 @@ static struct sync_file *sync_file_merge(const char *name, struct sync_file *a,
 	}
 
 	strlcpy(sync_file->name, name, sizeof(sync_file->name));
+	sync_file_debug_add(sync_file);
 	return sync_file;
 
 err:
@@ -285,6 +289,8 @@ static void sync_file_free(struct kref *kref)
 	if (test_bit(POLL_ENABLED, &sync_file->fence->flags))
 		dma_fence_remove_callback(sync_file->fence, &sync_file->cb);
 	dma_fence_put(sync_file->fence);
+
+	sync_file_debug_remove(sync_file);
 	kfree(sync_file);
 }
 
