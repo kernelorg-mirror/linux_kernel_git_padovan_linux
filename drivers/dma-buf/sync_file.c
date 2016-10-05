@@ -24,6 +24,7 @@
 #include <linux/uaccess.h>
 #include <linux/anon_inodes.h>
 #include <linux/sync_file.h>
+#include <linux/syscalls.h>
 #include <uapi/linux/sync_file.h>
 
 static const struct file_operations sync_file_fops;
@@ -460,3 +461,67 @@ static const struct file_operations sync_file_fops = {
 	.unlocked_ioctl = sync_file_ioctl,
 	.compat_ioctl = sync_file_ioctl,
 };
+
+static const char *sync_get_driver_name(struct dma_fence *fence)
+{
+	return "sync";
+}
+
+static const char *sync_get_timeline_name(struct dma_fence *fence)
+{
+	return "unbound";
+}
+
+static bool sync_enable_signaling(struct dma_fence *fence)
+{
+	return true;
+}
+
+static const struct dma_fence_ops sync_ops = {
+	.get_driver_name = sync_get_driver_name,
+	.get_timeline_name = sync_get_timeline_name,
+	.enable_signaling = sync_enable_signaling,
+	.wait = dma_fence_default_wait,
+};
+
+static DEFINE_SPINLOCK(lock);
+
+SYSCALL_DEFINE1(syncfd_create, unsigned int, flags)
+{
+	struct sync_file *sync_file;
+	struct dma_fence *fence;
+	int fd, ret;
+	const unsigned int valid_flags = SYNCFD_CLOEXEC;
+
+	if (flags & ~valid_flags)
+		return -EINVAL;
+
+	fence = kmalloc(sizeof(*fence), GFP_KERNEL);
+	if (!fence)
+		return -ENOMEM;
+
+	dma_fence_init(fence, &sync_ops, &lock, dma_fence_context_alloc(1), 1);
+
+	fd = get_unused_fd_flags((flags & SYNCFD_CLOEXEC) ? O_CLOEXEC : 0);
+	if (fd < 0) {
+		ret = fd;
+		goto err_fence;
+	}
+
+	sync_file = sync_file_create(fence);
+	if (!sync_file) {
+		ret = -ENOMEM;
+		goto err_fd;
+	}
+
+	fd_install(fd, sync_file->file);
+
+	return fd;
+
+err_fd:
+	put_unused_fd(fd);
+err_fence:
+	dma_fence_put(fence);
+
+	return ret;
+}

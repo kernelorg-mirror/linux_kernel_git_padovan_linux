@@ -94,4 +94,8 @@ struct sync_file_info {
  */
 #define SYNC_IOC_FILE_INFO	_IOWR(SYNC_IOC_MAGIC, 4, struct sync_file_info)
 
+/* flags for syncfd_create(2) (unsigned int) */
+#define SYNCFD_CLOEXEC		0x0001U
+
+
 #endif /* _UAPI_LINUX_SYNC_H */
