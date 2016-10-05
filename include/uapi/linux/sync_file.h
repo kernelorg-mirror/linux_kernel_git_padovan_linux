@@ -15,6 +15,16 @@
 #include <linux/types.h>
 
 /**
+ * struct sync_chain_data - data passed to merge ioctl
+ * @flags:	chain_data flags
+ */
+struct sync_chain_data {
+	__u32	fences_count;
+	__u32	flags;
+	__u64	fences;
+};
+
+/**
  * struct sync_merge_data - data passed to merge ioctl
  * @name:	name of new fence
  * @fd2:	file descriptor of second fence
@@ -105,7 +115,14 @@ struct sync_empty_fence {
 #define SYNC_IOC_FILE_INFO	_IOWR(SYNC_IOC_MAGIC, 4, struct sync_file_info)
 
 /**
+ * DOC: SYNC_IOC_CHAIN_FENCE - chain fences to a fence
+ *
+ */
+#define SYNC_IOC_CHAIN _IOWR(SYNC_IOC_MAGIC, 5, struct sync_chain_data)
+
+/**
  * DOC: SYNC_IOC_CREATE_FENCE - merge two fences
+ * XXX: this will become a syscall
  *
  */
 #define SYNC_IOC_CREATE_FENCE	_IOWR(SYNC_IOC_MAGIC, 5, struct sync_empty_fence)

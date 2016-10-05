@@ -49,6 +49,8 @@ static struct sync_file *sync_file_alloc(void)
 	init_waitqueue_head(&sync_file->wq);
 
 	INIT_LIST_HEAD(&sync_file->cb.node);
+	INIT_LIST_HEAD(&sync_file->chain);
+	INIT_LIST_HEAD(&sync_file->chain_cb.node);
 
 	return sync_file;
 
@@ -64,6 +66,20 @@ static void fence_check_cb_func(struct fence *f, struct fence_cb *cb)
 	sync_file = container_of(cb, struct sync_file, cb);
 
 	wake_up_all(&sync_file->wq);
+}
+
+static void fence_chain_cb_func(struct fence *f, struct fence_cb *cb)
+{
+	struct sync_file *sync_file, *sync_chain;
+
+	sync_file = container_of(cb, struct sync_file, chain_cb);
+
+	list_for_each_entry(sync_chain, &sync_file->chain, chain) {
+		pr_err("sync_chain %p\n",  sync_chain);
+		fence_signal(sync_chain->fence);
+		fence_put(sync_chain->fence);
+	}
+	//XXX still not cleaning the list up
 }
 
 /**
@@ -446,6 +462,59 @@ out:
 	return ret;
 }
 
+static long sync_file_ioctl_chain_fence(struct sync_file *sync_file,
+					unsigned long arg)
+{
+	struct sync_chain_data chain;
+	struct sync_file *sync_chain;
+	int *fences;
+	int i;
+
+	if (copy_from_user(&chain, (void __user *)arg, sizeof(chain)))
+		return -EFAULT;
+
+	if (!chain.fences_count)
+		return -EINVAL;
+
+	if (chain.flags)
+		return -EINVAL;
+
+	fences = kcalloc(chain.fences_count, sizeof(*fences), GFP_KERNEL);
+	if (!fences)
+		return -ENOMEM;
+
+	if (copy_from_user(fences, u64_to_user_ptr(chain.fences),
+			   sizeof(int) * chain.fences_count)) {
+		kfree(fences);
+		return -EFAULT;
+	}
+
+	for (i = 0 ; i < chain.fences_count ; i++) {
+		sync_chain = sync_file_fdget(fences[i]);
+		if (!sync_chain)
+			goto out;
+
+		if (fence_is_signaled(sync_chain->fence)) {
+		    fence_signal(sync_chain->fence);
+		    fence_put(sync_chain->fence);
+		} else {
+			if (list_empty(&sync_file->chain))
+				fence_add_callback(sync_file->fence,
+						   &sync_file->chain_cb,
+						   fence_chain_cb_func);
+			list_add(&sync_chain->chain, &sync_file->chain);
+			//FIXME: check fence_add_callback return
+		}
+	}
+
+	return 0;
+
+out:
+	//XXx put fences
+	kfree(fences);
+	return -EINVAL;
+}
+
 static long sync_file_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
@@ -458,6 +527,8 @@ static long sync_file_ioctl(struct file *file, unsigned int cmd,
 	case SYNC_IOC_FILE_INFO:
 		return sync_file_ioctl_fence_info(sync_file, arg);
 
+	case SYNC_IOC_CHAIN:
+		return sync_file_ioctl_chain_fence(sync_file, arg);
 	default:
 		return -ENOTTY;
 	}

@@ -43,6 +43,8 @@ struct sync_file {
 
 	struct fence		*fence;
 	struct fence_cb cb;
+	struct list_head	chain;
+	struct fence_cb		chain_cb;
 };
 
 #define POLL_ENABLED FENCE_FLAG_USER_BITS
