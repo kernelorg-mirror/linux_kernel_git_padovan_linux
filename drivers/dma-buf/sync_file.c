@@ -83,10 +83,13 @@ struct sync_file *sync_file_create(struct dma_fence *fence)
 
 	sync_file->fence = dma_fence_get(fence);
 
-	snprintf(sync_file->name, sizeof(sync_file->name), "%s-%s%llu-%d",
-		 fence->ops->get_driver_name(fence),
-		 fence->ops->get_timeline_name(fence), fence->context,
-		 fence->seqno);
+	if (fence)
+		snprintf(sync_file->name, sizeof(sync_file->name), "%s-%s%llu-%d",
+			 fence->ops->get_driver_name(fence),
+			 fence->ops->get_timeline_name(fence), fence->context,
+			 fence->seqno);
+	else
+		snprintf(sync_file->name, sizeof(sync_file->name), "unbound");
 
 	return sync_file;
 }
@@ -123,7 +126,11 @@ struct dma_fence *sync_file_get_fence(int fd)
 
 	sync_file = sync_file_fdget(fd);
 	if (!sync_file)
-		return NULL;
+		return ERR_PTR(-EINVAL);
+
+	if (wait_event_interruptible(sync_file->wq,
+				     sync_file->fence != NULL))
+		return ERR_PTR(-ERESTARTSYS);
 
 	fence = dma_fence_get(sync_file->fence);
 	fput(sync_file->file);
@@ -156,12 +163,19 @@ static int sync_file_set_fence(struct sync_file *sync_file,
 		sync_file->fence = &array->base;
 	}
 
+	wake_up_all(&sync_file->wq);
+
 	return 0;
 }
 
 static struct dma_fence **get_fences(struct sync_file *sync_file,
 				     int *num_fences)
 {
+	if (sync_file->fence == NULL) {
+		*num_fences = 0;
+		return NULL;
+	}
+	
 	if (dma_fence_is_array(sync_file->fence)) {
 		struct dma_fence_array *array = to_dma_fence_array(sync_file->fence);
 
@@ -283,9 +297,13 @@ static void sync_file_free(struct kref *kref)
 	struct sync_file *sync_file = container_of(kref, struct sync_file,
 						     kref);
 
-	if (test_bit(POLL_ENABLED, &sync_file->fence->flags))
-		dma_fence_remove_callback(sync_file->fence, &sync_file->cb);
-	dma_fence_put(sync_file->fence);
+	if (sync_file->fence) {
+		if (test_bit(POLL_ENABLED, &sync_file->fence->flags))
+			dma_fence_remove_callback(sync_file->fence,
+						  &sync_file->cb);
+		dma_fence_put(sync_file->fence);
+	}
+
 	kfree(sync_file);
 }
 
@@ -303,7 +321,8 @@ static unsigned int sync_file_poll(struct file *file, poll_table *wait)
 
 	poll_wait(file, &sync_file->wq, wait);
 
-	if (!test_and_set_bit(POLL_ENABLED, &sync_file->fence->flags)) {
+	if (sync_file->fence &&
+	    !test_and_set_bit(POLL_ENABLED, &sync_file->fence->flags)) {
 		if (dma_fence_add_callback(sync_file->fence, &sync_file->cb,
 					   fence_check_cb_func) < 0)
 			wake_up_all(&sync_file->wq);
@@ -402,7 +421,7 @@ static long sync_file_ioctl_fence_info(struct sync_file *sync_file,
 	 * sync_fence_info and return the actual number of fences on
 	 * info->num_fences.
 	 */
-	if (!info.num_fences)
+	if (!info.num_fences || !num_fences)
 		goto no_fences;
 
 	if (info.num_fences < num_fences)
@@ -424,7 +443,7 @@ static long sync_file_ioctl_fence_info(struct sync_file *sync_file,
 
 no_fences:
 	strlcpy(info.name, sync_file->name, sizeof(info.name));
-	info.status = dma_fence_is_signaled(sync_file->fence);
+	info.status = sync_file->fence && dma_fence_is_signaled(sync_file->fence);
 	info.num_fences = num_fences;
 
 	if (copy_to_user((void __user *)arg, &info, sizeof(info)))
@@ -489,26 +508,18 @@ static DEFINE_SPINLOCK(lock);
 SYSCALL_DEFINE1(syncfd_create, unsigned int, flags)
 {
 	struct sync_file *sync_file;
-	struct dma_fence *fence;
 	int fd, ret;
 	const unsigned int valid_flags = SYNCFD_CLOEXEC;
 
 	if (flags & ~valid_flags)
 		return -EINVAL;
 
-	fence = kmalloc(sizeof(*fence), GFP_KERNEL);
-	if (!fence)
-		return -ENOMEM;
-
-	dma_fence_init(fence, &sync_ops, &lock, dma_fence_context_alloc(1), 1);
 
 	fd = get_unused_fd_flags((flags & SYNCFD_CLOEXEC) ? O_CLOEXEC : 0);
-	if (fd < 0) {
-		ret = fd;
-		goto err_fence;
-	}
+	if (fd < 0)
+		return fd;
 
-	sync_file = sync_file_create(fence);
+	sync_file = sync_file_create(NULL);
 	if (!sync_file) {
 		ret = -ENOMEM;
 		goto err_fd;
@@ -520,8 +531,6 @@ SYSCALL_DEFINE1(syncfd_create, unsigned int, flags)
 
 err_fd:
 	put_unused_fd(fd);
-err_fence:
-	dma_fence_put(fence);
 
 	return ret;
 }
