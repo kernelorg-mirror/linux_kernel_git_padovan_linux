@@ -179,9 +179,13 @@ static int vb2_queue_or_prepare_buf(struct vb2_queue *q, struct v4l2_buffer *b,
 		return -EINVAL;
 	}
 
-	if ((b->fence_fd != 0 && b->fence_fd != -1) &&
-	    !(b->flags & V4L2_BUF_FLAG_IN_FENCE)) {
+	if (b->fence_fd > 0 && !(b->flags & V4L2_BUF_FLAG_IN_FENCE)) {
 		dprintk(1, "%s: fence_fd set without IN_FENCE flag\n", opname);
+		return -EINVAL;
+	}
+
+	if (b->fence_fd == -1 && (b->flags & V4L2_BUF_FLAG_IN_FENCE)) {
+		dprintk(1, "%s: IN_FENCE flag set but no fence_fd\n", opname);
 		return -EINVAL;
 	}
 
@@ -212,7 +216,13 @@ static void __fill_v4l2_buffer(struct vb2_buffer *vb, void *pb)
 	b->sequence = vbuf->sequence;
 	b->reserved = 0;
 
-	b->fence_fd = -1;
+	if (vb->out_fence) {
+		b->flags |= V4L2_BUF_FLAG_OUT_FENCE;
+		b->fence_fd = vb->out_fence_fd;
+	} else {
+		b->fence_fd = -1;
+	}
+
 	if (vb->in_fence)
 		b->flags |= V4L2_BUF_FLAG_IN_FENCE;
 	else
@@ -489,6 +499,10 @@ int vb2_querybuf(struct vb2_queue *q, struct v4l2_buffer *b)
 	ret = __verify_planes_array(vb, b);
 	if (!ret)
 		vb2_core_querybuf(q, b->index, b);
+
+	/* Do not return the out-fence fd on querybuf */
+	if (vb->out_fence)
+		b->fence_fd = -1;
 	return ret;
 }
 EXPORT_SYMBOL(vb2_querybuf);
@@ -590,6 +604,15 @@ int vb2_qbuf(struct vb2_queue *q, struct v4l2_buffer *b)
 			dprintk(1, "failed to get in-fence from fd %d\n",
 				b->fence_fd);
 			return -EINVAL;
+		}
+	}
+
+	if (b->flags & V4L2_BUF_FLAG_OUT_FENCE) {
+		ret = vb2_setup_out_fence(q, b->index);
+		if (ret) {
+			dprintk(1, "failed to set up out-fence\n");
+			dma_fence_put(fence);
+			return ret;
 		}
 	}
 

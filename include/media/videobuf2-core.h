@@ -259,6 +259,10 @@ struct vb2_buffer {
 	 *			using the buffer (queueing to the driver)
 	 * fence_cb:		fence callback information
 	 * fence_cb_lock:	protect callback signal/remove
+	 * out_fence_fd:	the out_fence_fd to be shared with userspace.
+	 * out_fence:		the out-fence associated with the buffer once
+	 *			it is queued to the driver.
+	 * sync_file:		the sync file to wrap the out fence
 	 */
 	enum vb2_buffer_state	state;
 
@@ -268,6 +272,10 @@ struct vb2_buffer {
 	struct dma_fence	*in_fence;
 	struct dma_fence_cb	fence_cb;
 	spinlock_t              fence_cb_lock;
+
+	int			out_fence_fd;
+	struct dma_fence	*out_fence;
+	struct sync_file	*sync_file;
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	/*
@@ -512,6 +520,7 @@ struct vb2_buf_ops {
  * @last_buffer_dequeued: used in poll() and DQBUF to immediately return if the
  *		last decoded buffer was already dequeued. Set for capture queues
  *		when a buffer with the V4L2_BUF_FLAG_LAST is dequeued.
+ * @out_fence_context: the fence context for the out fences
  * @fileio:	file io emulator internal data, used only if emulator is active
  * @threadio:	thread io internal data, used only if thread is active
  */
@@ -564,6 +573,9 @@ struct vb2_queue {
 	unsigned int			is_output:1;
 	unsigned int			copy_timestamp:1;
 	unsigned int			last_buffer_dequeued:1;
+
+	u64				out_fence_context;
+	spinlock_t			out_fence_lock;
 
 	struct vb2_fileio_data		*fileio;
 	struct vb2_threadio_data	*threadio;
@@ -733,6 +745,16 @@ int vb2_core_create_bufs(struct vb2_queue *q, enum vb2_memory memory,
  * from vidioc_prepare_buf handler in driver.
  */
 int vb2_core_prepare_buf(struct vb2_queue *q, unsigned int index, void *pb);
+
+/**
+ * vb2_setup_out_fence() - setup new out-fence
+ * @q:		The vb2_queue where to setup it
+ * @index:	index of the buffer
+ *
+ * Setup the file descriptor, the fence and the sync_file for the next
+ * buffer to be queued and add everything to the tail of the q->out_fence_list.
+ */
+int vb2_setup_out_fence(struct vb2_queue *q, unsigned int index);
 
 /**
  * vb2_core_qbuf() - Queue a buffer from userspace
