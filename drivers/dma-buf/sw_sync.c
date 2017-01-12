@@ -68,6 +68,8 @@ struct sw_sync_create_fence_data {
 
 #define SW_SYNC_IOC_INC			_IOW(SW_SYNC_IOC_MAGIC, 1, __u32)
 
+#define SW_SYNC_IOC_BOUND_FENCE		_IOW(SW_SYNC_IOC_MAGIC, 2, __u32)
+
 static const struct dma_fence_ops timeline_fence_ops;
 
 static inline struct sync_pt *dma_fence_to_sync_pt(struct dma_fence *fence)
@@ -350,6 +352,31 @@ static long sw_sync_ioctl_inc(struct sync_timeline *obj, unsigned long arg)
 	return 0;
 }
 
+static long sw_sync_ioctl_bound_fence(struct sync_timeline *obj,
+				       unsigned long arg)
+{
+	int fence_fd;
+	struct sync_pt *pt;
+	int ret;
+
+	if (copy_from_user(&fence_fd, (void __user *)arg, sizeof(fence_fd)))
+		return -EFAULT;
+
+	if (sync_file_is_bound(fence_fd))
+		return -EINVAL;
+
+	pt = sync_pt_create(obj, sizeof(*pt), ++obj->value);
+	if (!pt)
+		return -ENOMEM;
+
+	ret = sync_file_bound_fence(fence_fd, &pt->base);
+	dma_fence_put(&pt->base);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
 static long sw_sync_ioctl(struct file *file, unsigned int cmd,
 			  unsigned long arg)
 {
@@ -361,6 +388,9 @@ static long sw_sync_ioctl(struct file *file, unsigned int cmd,
 
 	case SW_SYNC_IOC_INC:
 		return sw_sync_ioctl_inc(obj, arg);
+
+	case SW_SYNC_IOC_BOUND_FENCE:
+		return sw_sync_ioctl_bound_fence(obj, arg);
 
 	default:
 		return -ENOTTY;

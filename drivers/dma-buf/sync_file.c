@@ -139,6 +139,45 @@ struct dma_fence *sync_file_get_fence(int fd)
 }
 EXPORT_SYMBOL(sync_file_get_fence);
 
+/**
+ * sync_file_is_fence -
+ */
+int sync_file_is_bound(int fd)
+{
+	struct sync_file *sync_file;
+	int ret;
+
+	sync_file = sync_file_fdget(fd);
+	if (!sync_file)
+		return -EINVAL;
+
+	ret = !!sync_file->fence;
+	fput(sync_file->file);
+
+	return ret;
+}
+EXPORT_SYMBOL(sync_file_is_bound);
+
+/**
+ * sync_file_bound_fence -
+ */
+int sync_file_bound_fence(int fd, struct dma_fence *fence)
+{
+	struct sync_file *sync_file;
+
+	sync_file = sync_file_fdget(fd);
+	if (!sync_file)
+		return -EINVAL;
+
+	sync_file->fence = dma_fence_get(fence);
+	fput(sync_file->file);
+
+	wake_up_all(&sync_file->wq);
+
+	return 0;
+}
+EXPORT_SYMBOL(sync_file_bound_fence);
+
 static int sync_file_set_fence(struct sync_file *sync_file,
 			       struct dma_fence **fences, int num_fences)
 {
@@ -175,7 +214,7 @@ static struct dma_fence **get_fences(struct sync_file *sync_file,
 		*num_fences = 0;
 		return NULL;
 	}
-	
+
 	if (dma_fence_is_array(sync_file->fence)) {
 		struct dma_fence_array *array = to_dma_fence_array(sync_file->fence);
 
@@ -481,30 +520,6 @@ static const struct file_operations sync_file_fops = {
 	.compat_ioctl = sync_file_ioctl,
 };
 
-static const char *sync_get_driver_name(struct dma_fence *fence)
-{
-	return "sync";
-}
-
-static const char *sync_get_timeline_name(struct dma_fence *fence)
-{
-	return "unbound";
-}
-
-static bool sync_enable_signaling(struct dma_fence *fence)
-{
-	return true;
-}
-
-static const struct dma_fence_ops sync_ops = {
-	.get_driver_name = sync_get_driver_name,
-	.get_timeline_name = sync_get_timeline_name,
-	.enable_signaling = sync_enable_signaling,
-	.wait = dma_fence_default_wait,
-};
-
-static DEFINE_SPINLOCK(lock);
-
 SYSCALL_DEFINE1(syncfd_create, unsigned int, flags)
 {
 	struct sync_file *sync_file;
@@ -513,7 +528,6 @@ SYSCALL_DEFINE1(syncfd_create, unsigned int, flags)
 
 	if (flags & ~valid_flags)
 		return -EINVAL;
-
 
 	fd = get_unused_fd_flags((flags & SYNCFD_CLOEXEC) ? O_CLOEXEC : 0);
 	if (fd < 0)

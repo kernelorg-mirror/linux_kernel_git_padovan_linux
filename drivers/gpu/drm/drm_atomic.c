@@ -285,14 +285,15 @@ drm_atomic_get_crtc_state(struct drm_atomic_state *state,
 }
 EXPORT_SYMBOL(drm_atomic_get_crtc_state);
 
-static void set_out_fence_for_crtc(struct drm_atomic_state *state,
-				   struct drm_crtc *crtc, s64 __user *fence_ptr)
+static void set_out_fence_ptr_for_crtc(struct drm_atomic_state *state,
+				       struct drm_crtc *crtc,
+				       s64 __user *fence_ptr)
 {
 	state->crtcs[drm_crtc_index(crtc)].out_fence_ptr = fence_ptr;
 }
 
-static s64 __user *get_out_fence_for_crtc(struct drm_atomic_state *state,
-					  struct drm_crtc *crtc)
+static s64 __user *get_out_fence_ptr_for_crtc(struct drm_atomic_state *state,
+					      struct drm_crtc *crtc)
 {
 	s64 __user *fence_ptr;
 
@@ -300,6 +301,24 @@ static s64 __user *get_out_fence_for_crtc(struct drm_atomic_state *state,
 	state->crtcs[drm_crtc_index(crtc)].out_fence_ptr = NULL;
 
 	return fence_ptr;
+}
+
+static void set_out_fence_fd_for_crtc(struct drm_atomic_state *state,
+				      struct drm_crtc *crtc,
+				      int out_fence_fd)
+{
+	state->crtcs[drm_crtc_index(crtc)].out_fence_fd = out_fence_fd;
+}
+
+static int get_out_fence_fd_for_crtc(struct drm_atomic_state *state,
+				     struct drm_crtc *crtc)
+{
+	int fence_fd;
+
+	fence_fd = state->crtcs[drm_crtc_index(crtc)].out_fence_fd;
+	state->crtcs[drm_crtc_index(crtc)].out_fence_fd = -1;
+
+	return fence_fd;
 }
 
 /**
@@ -515,7 +534,14 @@ int drm_atomic_crtc_set_property(struct drm_crtc *crtc,
 		if (put_user(-1, fence_ptr))
 			return -EFAULT;
 
-		set_out_fence_for_crtc(state->state, crtc, fence_ptr);
+		set_out_fence_ptr_for_crtc(state->state, crtc, fence_ptr);
+	} else if (property == config->prop_out_fence_fd) {
+		s32 out_fence_fd = val;
+
+		if (out_fence_fd == -1)
+			return 0;
+
+		set_out_fence_fd_for_crtc(state->state, crtc, out_fence_fd);
 	} else if (crtc->funcs->atomic_set_property)
 		return crtc->funcs->atomic_set_property(crtc, state, property, val);
 	else
@@ -560,6 +586,8 @@ drm_atomic_crtc_get_property(struct drm_crtc *crtc,
 		*val = (state->gamma_lut) ? state->gamma_lut->base.id : 0;
 	else if (property == config->prop_out_fence_ptr)
 		*val = 0;
+	else if (property == config->prop_out_fence_fd)
+		*val = -1;
 	else if (crtc->funcs->atomic_get_property)
 		return crtc->funcs->atomic_get_property(crtc, state, property, val);
 	else
@@ -745,8 +773,12 @@ int drm_atomic_plane_set_property(struct drm_plane *plane,
 			return 0;
 
 		state->fence = sync_file_get_fence(val);
-		if (!state->fence)
-			return -EINVAL;
+
+		if (IS_ERR(state->fence)) {
+			int err = PTR_ERR(state->fence);
+			state->fence = NULL;
+			return err;
+		}
 
 	} else if (property == config->prop_crtc_id) {
 		struct drm_crtc *crtc = drm_crtc_find(dev, val);
@@ -1952,10 +1984,17 @@ static int prepare_crtc_signaling(struct drm_device *dev,
 
 	for_each_crtc_in_state(state, crtc, crtc_state, i) {
 		u64 __user *fence_ptr;
+		int fence_fd;
 
-		fence_ptr = get_out_fence_for_crtc(crtc_state->state, crtc);
+		fence_ptr = get_out_fence_ptr_for_crtc(crtc_state->state, crtc);
 
-		if (arg->flags & DRM_MODE_PAGE_FLIP_EVENT || fence_ptr) {
+		fence_fd = get_out_fence_fd_for_crtc(crtc_state->state, crtc);
+
+		if (fence_ptr && fence_fd >= 0)
+			return -EINVAL;
+
+		if (arg->flags & DRM_MODE_PAGE_FLIP_EVENT ||
+		    fence_ptr || fence_fd >= 0) {
 			struct drm_pending_vblank_event *e;
 
 			e = create_vblank_event(dev, arg->user_data);
@@ -2006,6 +2045,23 @@ static int prepare_crtc_signaling(struct drm_device *dev,
 
 			crtc_state->event->base.fence = fence;
 		}
+
+		if (fence_fd >= 0) {
+			struct dma_fence *fence;
+
+			fence = drm_crtc_create_fence(crtc);
+			if (!fence)
+				return -ENOMEM;
+
+			ret = sync_file_bound_fence(fence_fd, fence);
+			if (!ret) {
+				dma_fence_put(fence);
+				return ret;
+			}
+
+			crtc_state->event->base.fence = dma_fence_get(fence);
+		}
+
 	}
 
 	return 0;

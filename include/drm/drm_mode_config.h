@@ -500,6 +500,10 @@ struct drm_mode_config {
 	 */
 	struct drm_property *prop_out_fence_ptr;
 	/**
+	 * @prop_out_fence_fd: Sync File fd pointer representing the...
+	 */
+	struct drm_property *prop_out_fence_fd;
+	/**
 	 * @prop_crtc_id: Default atomic plane property to specify the
 	 * &drm_crtc.
 	 */
