@@ -1601,7 +1601,7 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	struct sync_file *out_fence = NULL;
 	int out_fence_fd = -1;
 	int ret;
-	bool need_relocs;
+	bool need_relocs, future_fence = false;
 
 	if (!i915_gem_check_execbuffer(args))
 		return -EINVAL;
@@ -1619,6 +1619,10 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	}
 	if (args->flags & I915_EXEC_IS_PINNED)
 		dispatch_flags |= I915_DISPATCH_PINNED;
+
+	if ((args->flags & I915_EXEC_FENCE_OUT) &&
+	    (args->flags & I915_EXEC_FENCE_OUT_EMPTY))
+		return  -EINVAL;
 
 	engine = eb_select_engine(dev_priv, file, args);
 	if (!engine)
@@ -1658,6 +1662,16 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 			out_fence_fd = -1;
 			goto pre_mutex_err;
 		}
+	}
+
+	if (args->flags & I915_EXEC_FENCE_OUT_EMPTY) {
+		out_fence_fd = upper_32_bits(args->rsvd2);
+		if (out_fence_fd < 0) {
+			ret = out_fence_fd;
+			out_fence_fd = -1;
+			goto pre_mutex_err;
+		}
+		future_fence = true;
 	}
 
 	/* Take a local wakeref for preparing to dispatch the execbuf as
@@ -1812,10 +1826,17 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	}
 
 	if (out_fence_fd != -1) {
-		out_fence = sync_file_create(&params->request->fence);
-		if (!out_fence) {
-			ret = -ENOMEM;
-			goto err_request;
+		if (future_fence) {
+			ret = sync_file_bound_fence(out_fence_fd,
+						    &params->request->fence);
+			if (ret)
+				goto err_request;
+		} else  {
+			out_fence = sync_file_create(&params->request->fence);
+			if (!out_fence) {
+				ret = -ENOMEM;
+				goto err_request;
+			}
 		}
 	}
 
@@ -1877,7 +1898,7 @@ pre_mutex_err:
 	/* intel_gpu_busy should also get a ref, so it will free when the device
 	 * is really idle. */
 	intel_runtime_pm_put(dev_priv);
-	if (out_fence_fd != -1)
+	if (out_fence_fd != -1 && !future_fence)
 		put_unused_fd(out_fence_fd);
 	dma_fence_put(in_fence);
 	return ret;

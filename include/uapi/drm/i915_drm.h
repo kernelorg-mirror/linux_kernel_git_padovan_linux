@@ -887,7 +887,9 @@ struct drm_i915_gem_execbuffer2 {
  */
 #define I915_EXEC_FENCE_OUT		(1<<17)
 
-#define __I915_EXEC_UNKNOWN_FLAGS (-(I915_EXEC_FENCE_OUT<<1))
+#define I915_EXEC_FENCE_OUT_EMPTY	(1<<18)
+
+#define __I915_EXEC_UNKNOWN_FLAGS (-(I915_EXEC_FENCE_OUT_EMPTY<<1))
 
 #define I915_EXEC_CONTEXT_ID_MASK	(0xffffffff)
 #define i915_execbuffer2_set_context_id(eb2, context) \
