@@ -648,6 +648,21 @@ Buffer Flags
       - Start Of Exposure. The buffer timestamp has been taken when the
 	exposure of the frame has begun. This is only valid for the
 	``V4L2_BUF_TYPE_VIDEO_CAPTURE`` buffer type.
+    * .. _`V4L2-BUF-FLAG-IN-FENCE`:
+
+      - ``V4L2_BUF_FLAG_IN_FENCE``
+      - 0x00200000
+      - Ask V4L2 to wait on fence passed in ``fence_fd`` field. The buffer
+	won't be queued to the driver until the fence signals.
+
+    * .. _`V4L2-BUF-FLAG-OUT-FENCE`:
+
+      - ``V4L2_BUF_FLAG_OUT_FENCE``
+      - 0x00400000
+      - Request a fence to be attached to the buffer. The ``fence_fd``
+	field on
+	:ref:`VIDIOC_QBUF` is used as a return argument to send the out-fence
+	fd to userspace.
 
 
 
