@@ -262,6 +262,57 @@ static void virtio_gpu_cursor_plane_update(struct drm_plane *plane,
 	virtio_gpu_cursor_ping(vgdev, output);
 }
 
+static int virtio_gpu_cursor_plane_async_check(struct drm_plane *plane,
+					       struct drm_plane_state *new_state)
+{
+	struct virtio_gpu_output *output;
+
+	if (!plane->state->crtc)
+		return -EINVAL;
+
+	output = drm_crtc_to_virtio_gpu_output(plane->state->crtc);
+	if (!output)
+		return -EINVAL;
+
+	if (plane->state->crtc != new_state->crtc ||
+	    plane->state->src_w != new_state->src_w ||
+	    plane->state->src_h != new_state->src_h ||
+	    plane->state->crtc_w != new_state->crtc_w ||
+	    plane->state->crtc_h != new_state->crtc_h ||
+	    !plane->state->fb ||
+	    plane->state->fb != new_state->fb)
+		return -EINVAL;
+
+	return 0;
+}
+
+static void virtio_gpu_cursor_plane_async_update(struct drm_plane *plane,
+						 struct drm_plane_state *new_state)
+{
+	struct drm_device *dev = plane->dev;
+	struct virtio_gpu_device *vgdev = dev->dev_private;
+	struct virtio_gpu_output *output = NULL;
+
+	output = drm_crtc_to_virtio_gpu_output(plane->state->crtc);
+	if (WARN_ON(!output))
+		return;
+
+	if (plane->state->fb != new_state->fb)
+		return;
+
+	plane->state->src_x = new_state->src_x;
+	plane->state->src_y = new_state->src_y;
+	plane->state->crtc_x = new_state->crtc_x;
+	plane->state->crtc_y = new_state->crtc_y;
+
+	DRM_DEBUG("move +%d+%d\n", plane->state->crtc_x, plane->state->crtc_y);
+
+	output->cursor.hdr.type = cpu_to_le32(VIRTIO_GPU_CMD_MOVE_CURSOR);
+	output->cursor.pos.x = cpu_to_le32(plane->state->crtc_x);
+	output->cursor.pos.y = cpu_to_le32(plane->state->crtc_y);
+	virtio_gpu_cursor_ping(vgdev, output);
+}
+
 static const struct drm_plane_helper_funcs virtio_gpu_primary_helper_funcs = {
 	.atomic_check		= virtio_gpu_plane_atomic_check,
 	.atomic_update		= virtio_gpu_primary_plane_update,
@@ -270,6 +321,8 @@ static const struct drm_plane_helper_funcs virtio_gpu_primary_helper_funcs = {
 static const struct drm_plane_helper_funcs virtio_gpu_cursor_helper_funcs = {
 	.atomic_check		= virtio_gpu_plane_atomic_check,
 	.atomic_update		= virtio_gpu_cursor_plane_update,
+	.atomic_async_check	= virtio_gpu_cursor_plane_async_check,
+	.atomic_async_update	= virtio_gpu_cursor_plane_async_update,
 };
 
 struct drm_plane *virtio_gpu_plane_init(struct virtio_gpu_device *vgdev,
