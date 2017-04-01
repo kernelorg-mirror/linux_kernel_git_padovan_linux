@@ -172,6 +172,9 @@ int msm_atomic_check(struct drm_device *dev,
 	if (ret)
 		return ret;
 
+	if (state->legacy_cursor_update)
+		state->async_update = !drm_atomic_helper_async_check(dev, state);
+
 	return ret;
 }
 
@@ -201,6 +204,12 @@ int msm_atomic_commit(struct drm_device *dev,
 	ret = drm_atomic_helper_prepare_planes(dev, state);
 	if (ret)
 		return ret;
+
+	if (state->async_update) {
+		drm_atomic_helper_async_commit(dev, state);
+		drm_atomic_helper_cleanup_planes(dev, state);
+		return 0;
+	}
 
 	c = commit_init(state);
 	if (!c) {
