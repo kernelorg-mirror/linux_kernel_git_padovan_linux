@@ -12779,6 +12779,9 @@ static int intel_atomic_check(struct drm_device *dev,
 	if (ret)
 		return ret;
 
+	if (state->legacy_cursor_update)
+		state->async_update = !drm_atomic_helper_async_check(dev, state);
+
 	intel_fbc_choose_crtc(dev_priv, state);
 	return calc_watermark_data(state);
 }
@@ -13251,6 +13254,26 @@ static int intel_atomic_commit(struct drm_device *dev,
 	struct drm_i915_private *dev_priv = to_i915(dev);
 	int ret = 0;
 
+	/*
+	 * The atomic async update fast path takes care
+	 * of avoiding the vblank waits for simple cursor
+	 * movement and flips. For cursor on/off and size changes,
+	 * we want to perform the vblank waits so that watermark
+	 * updates happen during the correct frames. Gen9+ have
+	 * double buffered watermarks and so shouldn't need this.
+	 */
+	if (state->async_update) {
+		ret = mutex_lock_interruptible(&dev->struct_mutex);
+		if (ret)
+			return ret;
+
+		ret = drm_atomic_helper_prepare_planes(dev, state);
+		mutex_unlock(&dev->struct_mutex);
+
+		drm_atomic_helper_async_commit(dev, state);
+		return 0;
+	}
+
 	ret = drm_atomic_helper_setup_commit(state, nonblock);
 	if (ret)
 		return ret;
@@ -13379,6 +13402,9 @@ intel_prepare_plane_fb(struct drm_plane *plane,
 			to_intel_plane_state(new_state)->vma = vma;
 		}
 	}
+
+	if (new_state->state->async_update)
+		return 0;
 
 	if (!obj && !old_obj)
 		return 0;
@@ -13607,132 +13633,8 @@ const struct drm_plane_funcs intel_plane_funcs = {
 	.atomic_destroy_state = intel_plane_destroy_state,
 };
 
-static int
-intel_legacy_cursor_update(struct drm_plane *plane,
-			   struct drm_crtc *crtc,
-			   struct drm_framebuffer *fb,
-			   int crtc_x, int crtc_y,
-			   unsigned int crtc_w, unsigned int crtc_h,
-			   uint32_t src_x, uint32_t src_y,
-			   uint32_t src_w, uint32_t src_h,
-			   struct drm_modeset_acquire_ctx *ctx)
-{
-	struct drm_i915_private *dev_priv = to_i915(crtc->dev);
-	int ret;
-	struct drm_plane_state *old_plane_state, *new_plane_state;
-	struct intel_plane *intel_plane = to_intel_plane(plane);
-	struct drm_framebuffer *old_fb;
-	struct drm_crtc_state *crtc_state = crtc->state;
-	struct i915_vma *old_vma;
-
-	/*
-	 * When crtc is inactive or there is a modeset pending,
-	 * wait for it to complete in the slowpath
-	 */
-	if (!crtc_state->active || needs_modeset(crtc_state) ||
-	    to_intel_crtc_state(crtc_state)->update_pipe)
-		goto slow;
-
-	old_plane_state = plane->state;
-
-	/*
-	 * If any parameters change that may affect watermarks,
-	 * take the slowpath. Only changing fb or position should be
-	 * in the fastpath.
-	 */
-	if (old_plane_state->crtc != crtc ||
-	    old_plane_state->src_w != src_w ||
-	    old_plane_state->src_h != src_h ||
-	    old_plane_state->crtc_w != crtc_w ||
-	    old_plane_state->crtc_h != crtc_h ||
-	    !old_plane_state->fb != !fb)
-		goto slow;
-
-	new_plane_state = intel_plane_duplicate_state(plane);
-	if (!new_plane_state)
-		return -ENOMEM;
-
-	drm_atomic_set_fb_for_plane(new_plane_state, fb);
-
-	new_plane_state->src_x = src_x;
-	new_plane_state->src_y = src_y;
-	new_plane_state->src_w = src_w;
-	new_plane_state->src_h = src_h;
-	new_plane_state->crtc_x = crtc_x;
-	new_plane_state->crtc_y = crtc_y;
-	new_plane_state->crtc_w = crtc_w;
-	new_plane_state->crtc_h = crtc_h;
-
-	ret = intel_plane_atomic_check_with_state(to_intel_crtc_state(crtc->state),
-						  to_intel_plane_state(new_plane_state));
-	if (ret)
-		goto out_free;
-
-	ret = mutex_lock_interruptible(&dev_priv->drm.struct_mutex);
-	if (ret)
-		goto out_free;
-
-	if (INTEL_INFO(dev_priv)->cursor_needs_physical) {
-		int align = intel_cursor_alignment(dev_priv);
-
-		ret = i915_gem_object_attach_phys(intel_fb_obj(fb), align);
-		if (ret) {
-			DRM_DEBUG_KMS("failed to attach phys object\n");
-			goto out_unlock;
-		}
-	} else {
-		struct i915_vma *vma;
-
-		vma = intel_pin_and_fence_fb_obj(fb, new_plane_state->rotation);
-		if (IS_ERR(vma)) {
-			DRM_DEBUG_KMS("failed to pin object\n");
-
-			ret = PTR_ERR(vma);
-			goto out_unlock;
-		}
-
-		to_intel_plane_state(new_plane_state)->vma = vma;
-	}
-
-	old_fb = old_plane_state->fb;
-	old_vma = to_intel_plane_state(old_plane_state)->vma;
-
-	i915_gem_track_fb(intel_fb_obj(old_fb), intel_fb_obj(fb),
-			  intel_plane->frontbuffer_bit);
-
-	/* Swap plane state */
-	new_plane_state->fence = old_plane_state->fence;
-	*to_intel_plane_state(old_plane_state) = *to_intel_plane_state(new_plane_state);
-	new_plane_state->fence = NULL;
-	new_plane_state->fb = old_fb;
-	to_intel_plane_state(new_plane_state)->vma = old_vma;
-
-	if (plane->state->visible) {
-		trace_intel_update_plane(plane, to_intel_crtc(crtc));
-		intel_plane->update_plane(intel_plane,
-					  to_intel_crtc_state(crtc->state),
-					  to_intel_plane_state(plane->state));
-	} else {
-		trace_intel_disable_plane(plane, to_intel_crtc(crtc));
-		intel_plane->disable_plane(intel_plane, to_intel_crtc(crtc));
-	}
-
-	intel_cleanup_plane_fb(plane, new_plane_state);
-
-out_unlock:
-	mutex_unlock(&dev_priv->drm.struct_mutex);
-out_free:
-	intel_plane_destroy_state(plane, new_plane_state);
-	return ret;
-
-slow:
-	return drm_atomic_helper_update_plane(plane, crtc, fb,
-					      crtc_x, crtc_y, crtc_w, crtc_h,
-					      src_x, src_y, src_w, src_h, ctx);
-}
-
 static const struct drm_plane_funcs intel_cursor_plane_funcs = {
-	.update_plane = intel_legacy_cursor_update,
+	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
 	.destroy = intel_plane_destroy,
 	.set_property = drm_atomic_helper_plane_set_property,
