@@ -13633,17 +13633,6 @@ const struct drm_plane_funcs intel_plane_funcs = {
 	.atomic_destroy_state = intel_plane_destroy_state,
 };
 
-static const struct drm_plane_funcs intel_cursor_plane_funcs = {
-	.update_plane = drm_atomic_helper_update_plane,
-	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = intel_plane_destroy,
-	.set_property = drm_atomic_helper_plane_set_property,
-	.atomic_get_property = intel_plane_atomic_get_property,
-	.atomic_set_property = intel_plane_atomic_set_property,
-	.atomic_duplicate_state = intel_plane_duplicate_state,
-	.atomic_destroy_state = intel_plane_destroy_state,
-};
-
 static struct intel_plane *
 intel_primary_plane_create(struct drm_i915_private *dev_priv, enum pipe pipe)
 {
@@ -13808,7 +13797,7 @@ intel_cursor_plane_create(struct drm_i915_private *dev_priv,
 		cursor->cursor.size = ~0;
 
 	ret = drm_universal_plane_init(&dev_priv->drm, &cursor->base,
-				       0, &intel_cursor_plane_funcs,
+				       0, &intel_plane_funcs,
 				       intel_cursor_formats,
 				       ARRAY_SIZE(intel_cursor_formats),
 				       NULL, DRM_PLANE_TYPE_CURSOR,
