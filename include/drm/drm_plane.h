@@ -123,6 +123,13 @@ struct drm_plane_state {
 	 */
 	bool visible;
 
+	/**
+	 * @pending:
+	 *
+	 * Tell if the state is still pending to be committed to the hw or not.
+	 */
+	bool pending;
+
 	struct drm_atomic_state *state;
 };
 

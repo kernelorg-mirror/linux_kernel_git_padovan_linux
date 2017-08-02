@@ -1858,6 +1858,8 @@ void drm_atomic_helper_commit_hw_done(struct drm_atomic_state *old_state)
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *new_crtc_state;
 	struct drm_crtc_commit *commit;
+	struct drm_plane *plane;
+	struct drm_plane_state *new_plane_state;
 	int i;
 
 	for_each_new_crtc_in_state(old_state, crtc, new_crtc_state, i) {
@@ -1869,6 +1871,9 @@ void drm_atomic_helper_commit_hw_done(struct drm_atomic_state *old_state)
 		WARN_ON(new_crtc_state->event);
 		complete_all(&commit->hw_done);
 	}
+
+	for_each_new_plane_in_state(old_state, plane, new_plane_state, i)
+		new_plane_state->pending = false;
 }
 EXPORT_SYMBOL(drm_atomic_helper_commit_hw_done);
 
@@ -2351,6 +2356,7 @@ int drm_atomic_helper_swap_state(struct drm_atomic_state *state,
 
 		old_plane_state->state = state;
 		new_plane_state->state = NULL;
+		new_plane_state->pending = true;
 
 		state->planes[i].state = old_plane_state;
 		plane->state = new_plane_state;
