@@ -940,12 +940,14 @@ void vb2_buffer_done(struct vb2_buffer *vb, enum vb2_buffer_state state)
 			__enqueue_in_driver(vb);
 		break;
 	default:
-		if (state == VB2_BUF_STATE_ERROR)
-			dma_fence_set_error(vb->out_fence, -EFAULT);
-		dma_fence_signal(vb->out_fence);
-		dma_fence_put(vb->out_fence);
-		vb->out_fence = NULL;
-		vb->out_fence_fd = -1;
+		if (vb->out_fence) {
+			if (state == VB2_BUF_STATE_ERROR)
+				dma_fence_set_error(vb->out_fence, -EFAULT);
+			dma_fence_signal(vb->out_fence);
+			dma_fence_put(vb->out_fence);
+			vb->out_fence = NULL;
+			vb->out_fence_fd = -1;
+		}
 
 		/* Inform any processes that may be waiting for buffers */
 		wake_up(&q->done_wq);
